@@ -1,4 +1,4 @@
-#ifdef USE_OSS
+#ifndef USE_OSS
 #include "audiostream.h"
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -10,6 +10,11 @@ class OSSAudioBackend : public AudioBackend
 	int audioFD = -1;
 	int recordFD = -1;
 
+	static bool openDevice(const char* path, int flags)
+	{
+
+	}
+
 public:
 	OSSAudioBackend()
 		: AudioBackend("oss", "Open Sound System") {}
@@ -19,20 +24,55 @@ public:
 		audioFD = open("/dev/dsp", O_WRONLY);
 		if (audioFD < 0)
 		{
-			WARN_LOG(AUDIO, "Couldn't open /dev/dsp.");
+			ERROR_LOG(AUDIO, "OSS: open(/dev/dsp) failed: %s", strerror(errno));
+			term();
 			return false;
 		}
-		INFO_LOG(AUDIO, "sound enabled, dsp opened for write");
-		int tmp=44100;
-		int err_ret;
-		err_ret=ioctl(audioFD,SNDCTL_DSP_SPEED,&tmp);
-		INFO_LOG(AUDIO, "set Frequency to %i, return %i (rate=%i)", 44100, err_ret, tmp);
-		int channels=2;
-		err_ret=ioctl(audioFD, SNDCTL_DSP_CHANNELS, &channels);
-		INFO_LOG(AUDIO, "set dsp to stereo (%i => %i)", channels, err_ret);
-		int format=AFMT_S16_LE;
-		err_ret=ioctl(audioFD, SNDCTL_DSP_SETFMT, &format);
-		INFO_LOG(AUDIO, "set dsp to %s audio (%i/%i => %i)", "16bits signed", AFMT_S16_LE, format, err_ret);
+
+		const int rate = 44100;
+		int tmp = rate;
+		if (ioctl(audioFD, SNDCTL_DSP_SPEED, &tmp) < 0)
+		{
+			ERROR_LOG(AUDIO, "OSS: ioctl(SNDCTL_DSP_SPEED) failed: %s", strerror(errno));
+			term();
+			return false;
+		}
+		if (tmp != rate)
+		{
+			ERROR_LOG(AUDIO, "OSS: sample rate unsupported: %d => %d", rate, tmp);
+			term();
+			return false;
+		}
+
+		const int channels = 2;
+		tmp = channels;
+		if (ioctl(audioFD, SNDCTL_DSP_CHANNELS, &tmp) < 0)
+		{
+			ERROR_LOG(AUDIO, "OSS: ioctl(SNDCTL_DSP_CHANNELS) failed: %s", strerror(errno));
+			term();
+			return false;
+		}
+		if (tmp != channels)
+		{
+			ERROR_LOG(AUDIO, "OSS: channels unsupported: %d => %d", channels, tmp);
+			term();
+			return false;
+		}
+
+		const int format = AFMT_S16_LE;
+		tmp = format;
+		if (ioctl(audioFD, SNDCTL_DSP_SETFMT, &tmp) < 0)
+		{
+			ERROR_LOG(AUDIO, "OSS: ioctl(SNDCTL_DSP_SETFMT) failed: %s", strerror(errno));
+			term();
+			return false;
+		}
+		if (tmp != format)
+		{
+			ERROR_LOG(AUDIO, "OSS: sample format unsupported: s16le => %#.8x", tmp);
+			term();
+			return false;
+		}
 
 		return true;
 	}
@@ -57,13 +97,23 @@ public:
 		recordFD = open("/dev/dsp", O_RDONLY);
 		if (recordFD < 0)
 		{
-			INFO_LOG(AUDIO, "OSS: can't open default audio capture device");
+			ERROR_LOG(AUDIO, "OSS: open(/dev/dsp) failed: %s", strerror(errno));
 			return false;
 		}
+
+		tmp = sampling_freq;
+		if (ioctl(recordFD, SNDCTL_DSP_SPEED, &tmp) == -1)
+		{
+			INFO_LOG(AUDIO, "OSS: can't set sample rate");
+			close(recordFD);
+			recordFD = -1;
+			return false;
+		}
+
 		int tmp = AFMT_S16_NE;	// Native 16 bits
 		if (ioctl(recordFD, SNDCTL_DSP_SETFMT, &tmp) == -1 || tmp != AFMT_S16_NE)
 		{
-			INFO_LOG(AUDIO, "OSS: can't set sample format");
+			ERROR_LOG(AUDIO, "OSS: can't set sample format: %s", strerror(errno));
 			close(recordFD);
 			recordFD = -1;
 			return false;
@@ -72,14 +122,6 @@ public:
 		if (ioctl(recordFD, SNDCTL_DSP_CHANNELS, &tmp) == -1)
 		{
 			INFO_LOG(AUDIO, "OSS: can't set channel count");
-			close(recordFD);
-			recordFD = -1;
-			return false;
-		}
-		tmp = sampling_freq;
-		if (ioctl(recordFD, SNDCTL_DSP_SPEED, &tmp) == -1)
-		{
-			INFO_LOG(AUDIO, "OSS: can't set sample rate");
 			close(recordFD);
 			recordFD = -1;
 			return false;
